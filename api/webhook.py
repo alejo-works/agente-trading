@@ -1,6 +1,6 @@
 """
-Webhook — recibe señales de TradingView y las procesa.
-Fase 1: parsea la señal y envía alerta básica por Telegram.
+Webhook — recibe señales de TradingView y las procesa con IA.
+Fase 2: análisis completo con Claude + RAG.
 """
 from fastapi import APIRouter, Request, HTTPException, Header
 from loguru import logger
@@ -11,17 +11,18 @@ import pytz
 
 from config.settings import settings
 from execution.telegram_bot import send_telegram
+from ai.analyzer import analyze_signal
 
 router = APIRouter()
 
-# ── MODELO DE SEÑAL ──────────────────────────────────────────
+
 class Signal(BaseModel):
-    type: str = "CONFLUENCIA"         # CONFLUENCIA | SMC | ORB | BB_RSI
-    direction: str                     # LONG | SHORT
-    pair: str                          # EURUSD, XAUUSD...
-    timeframe: str                     # 15, 60...
-    score: Optional[str] = "0"        # 1, 2 o 3
-    price: str                         # precio de cierre
+    type: str = "CONFLUENCIA"
+    direction: str
+    pair: str
+    timeframe: str
+    score: Optional[str] = "0"
+    price: str
     time: Optional[str] = None
     smc: Optional[str] = "0"
     orb: Optional[str] = "0"
@@ -42,18 +43,16 @@ class Signal(BaseModel):
             return 0.0
 
 
-# ── HELPERS ──────────────────────────────────────────────────
 def hora_espana() -> str:
-    """Devuelve la hora actual en España (CET/CEST)."""
     tz = pytz.timezone("Europe/Madrid")
-    now = datetime.now(tz)
-    return now.strftime("%H:%M")
+    return datetime.now(tz).strftime("%H:%M")
 
 def hora_ny() -> str:
-    """Devuelve la hora actual en Nueva York."""
     tz = pytz.timezone("America/New_York")
-    now = datetime.now(tz)
-    return now.strftime("%H:%M")
+    return datetime.now(tz).strftime("%H:%M")
+
+def direction_emoji(direction: str) -> str:
+    return "🟢" if direction == "LONG" else "🔴"
 
 def score_emoji(score: int) -> str:
     if score >= 3:
@@ -62,103 +61,117 @@ def score_emoji(score: int) -> str:
         return "⭐⭐ MODERADA"
     return "⭐ DÉBIL"
 
-def direction_emoji(direction: str) -> str:
-    return "🟢" if direction == "LONG" else "🔴"
 
-def build_telegram_message(signal: Signal) -> str:
-    """Construye el mensaje de Telegram para la señal recibida."""
+def build_telegram_message(signal: Signal, analysis=None) -> str:
     emoji  = direction_emoji(signal.direction)
-    score  = score_emoji(signal.score_int)
     h_esp  = hora_espana()
     h_ny   = hora_ny()
+    smc_ok = "✅" if float(signal.smc or 0) > 0 else "—"
+    orb_ok = "✅" if float(signal.orb or 0) > 0 else "—"
+    bb_ok  = "✅" if float(signal.bb_rsi or 0) > 0 else "—"
 
-    # Estrategias activas
-    smc_ok    = "✅" if float(signal.smc or 0) > 0    else "—"
-    orb_ok    = "✅" if float(signal.orb or 0) > 0    else "—"
-    bbrsi_ok  = "✅" if float(signal.bb_rsi or 0) > 0 else "—"
+    if analysis:
+        decision_emoji = "✅ GO" if analysis.decision == "GO" else "❌ NO-GO"
+        pip_decimals = 3 if "JPY" in signal.pair else 5
+        entry  = signal.price_float
+        sl     = entry - analysis.sl_pips * 0.0001 if signal.direction == "LONG" else entry + analysis.sl_pips * 0.0001
+        tp     = entry + analysis.tp_pips * 0.0001 if signal.direction == "LONG" else entry - analysis.tp_pips * 0.0001
+        rr     = round(analysis.tp_pips / analysis.sl_pips, 1) if analysis.sl_pips > 0 else 0
 
-    msg = f"""
-{emoji} *SEÑAL {signal.direction} — {signal.pair}*
+        msg = f"""
+{emoji} *{signal.direction} — {signal.pair}*
 ⏰ {h_esp} España | {h_ny} NY
 
-📊 *Confluencia: {signal.score_int}/3 {score}*
+📊 *Confluencia: {signal.score_int}/3 {score_emoji(signal.score_int)}*
 • SMC:    {smc_ok}
 • ORB:    {orb_ok}
-• BB+RSI: {bbrsi_ok}
+• BB+RSI: {bb_ok}
 
-💰 *Precio:* `{signal.price_float:.5f}`
-📐 *Temporalidad:* M{signal.timeframe}
+🤖 *Análisis IA: {decision_emoji}*
+_{analysis.reasoning}_
 
-🤖 _Análisis IA en construcción — Fase 2_
+📍 Entrada: `{entry:.{pip_decimals}f}`
+🛑 Stop Loss: `{sl:.{pip_decimals}f}` ({analysis.sl_pips} pips)
+✅ Take Profit: `{tp:.{pip_decimals}f}` ({analysis.tp_pips} pips)
+📐 R:R: 1:{rr} | Riesgo: {analysis.risk_size}%
+🎯 Probabilidad IA: *{analysis.probability}%*
+""".strip()
+    else:
+        msg = f"""
+{emoji} *SEÑAL {signal.direction} — {signal.pair}*
+⏰ {h_esp} España | {h_ny} NY
+📊 Confluencia: {signal.score_int}/3 {score_emoji(signal.score_int)}
+🤖 _Analizando con IA..._
 """.strip()
 
     return msg
 
 
-# ── ENDPOINT PRINCIPAL ───────────────────────────────────────
 @router.post("/signal")
 async def receive_signal(
     request: Request,
     x_webhook_secret: Optional[str] = Header(None)
 ):
-    """
-    Recibe el webhook de TradingView con la señal de confluencia.
-    Valida, parsea y envía alerta básica por Telegram.
-    """
-    # Validar secret
     if x_webhook_secret != settings.webhook_secret:
-        logger.warning("Webhook rechazado — secret inválido")
         raise HTTPException(status_code=401, detail="No autorizado")
 
-    # Parsear payload
     try:
         payload = await request.json()
         logger.info(f"Señal recibida: {payload}")
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"JSON inválido: {e}")
 
-    # Validar score mínimo
     score = int(float(payload.get("score", 0)))
     if score < 2:
-        logger.info(f"Señal descartada — score {score}/3 insuficiente")
         return {"status": "ignored", "reason": "score < 2"}
 
-    # Construir señal
+    signal = Signal(**payload)
+
+    # Envía alerta inmediata mientras Claude analiza
+    await send_telegram(build_telegram_message(signal))
+
+    # Análisis con Claude + RAG
     try:
-        signal = Signal(**payload)
+        analysis = await analyze_signal(
+            direction=signal.direction,
+            pair=signal.pair,
+            price=signal.price_float,
+            score=signal.score_int,
+            timeframe=signal.timeframe,
+            smc_active=float(signal.smc or 0) > 0,
+            orb_active=float(signal.orb or 0) > 0,
+            bb_rsi_active=float(signal.bb_rsi or 0) > 0,
+            daily_pnl=0.0,       # TODO Fase 4: leer de PostgreSQL
+            daily_drawdown_pct=0.0,
+            trades_today=0,
+        )
+        # Envía análisis completo
+        await send_telegram(build_telegram_message(signal, analysis))
+        logger.info(f"✅ Análisis completado: {analysis.decision} {analysis.probability}%")
+
     except Exception as e:
-        raise HTTPException(status_code=422, detail=f"Señal inválida: {e}")
+        logger.error(f"Error en análisis IA: {e}")
+        await send_telegram(f"⚠️ Error en análisis IA: {e}\nRevisar manualmente.")
 
-    # Enviar a Telegram
-    mensaje = build_telegram_message(signal)
-    await send_telegram(mensaje)
-
-    logger.info(f"✅ Señal procesada: {signal.direction} {signal.pair} {signal.score_int}/3")
-    return {
-        "status": "ok",
-        "direction": signal.direction,
-        "pair": signal.pair,
-        "score": signal.score_int
-    }
+    return {"status": "ok", "pair": signal.pair, "direction": signal.direction}
 
 
 @router.get("/test")
 async def test_signal():
-    """
-    Endpoint de prueba — simula una señal sin TradingView.
-    Útil mientras no tenemos plan Plus.
-    GET https://tu-app.railway.app/webhook/test
-    """
-    test_signal = Signal(
-        direction="LONG",
-        pair="EURUSD",
-        timeframe="15",
-        score="3",
-        price="1.16505",
-        smc="1",
-        orb="1",
-        bb_rsi="1"
+    """Simula señal 3/3 para probar el pipeline completo."""
+    signal = Signal(
+        direction="LONG", pair="EURUSD",
+        timeframe="15", score="3", price="1.16505",
+        smc="1", orb="1", bb_rsi="1"
     )
-    mensaje = build_telegram_message(test_signal)
-    await send_telegram(mensaje)
-    return {"status": "test enviado", "mensaje": mensaje}
+
+    await send_telegram(build_telegram_message(signal))
+
+    analysis = await analyze_signal(
+        direction="LONG", pair="EURUSD",
+        price=1.16505, score=3, timeframe="15",
+        smc_active=True, orb_active=True, bb_rsi_active=True,
+    )
+
+    await send_telegram(build_telegram_message(signal, analysis))
+    return {"status": "test enviado", "decision": analysis.decision, "prob": analysis.probability}
