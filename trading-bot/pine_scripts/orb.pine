@@ -1,3 +1,0 @@
-// ORB — Opening Range Breakout | TODO: Fase 1
-//@version=6
-indicator("ORB — Trading Bot", overlay=true)

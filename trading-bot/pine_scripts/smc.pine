@@ -1,3 +1,0 @@
-// SMC — Smart Money Concepts | TODO: Fase 1
-//@version=6
-indicator("SMC — Trading Bot", overlay=true)
