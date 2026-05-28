@@ -61,11 +61,11 @@ class Settings(BaseSettings):
     execution_mode: Literal["manual", "semi-auto", "full-auto"] = "semi-auto"
 
     # PARES ACTIVOS
-    active_pairs: list = ["XAUUSD", "EURUSD", "GBPUSD", "USDJPY"]
+    active_pairs: list = ["XAUUSD", "EURUSD", "GBPUSD"]
     priority_pair: str = "XAUUSD"
 
     # MODELO IA
-    claude_model: str = "claude-sonnet-4-20250514"
+    claude_model: str = "claude-sonnet-4-6"
     claude_max_tokens: int = 1000
 
     class Config:
