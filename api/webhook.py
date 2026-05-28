@@ -54,12 +54,16 @@ def hora_ny() -> str:
 def direction_emoji(direction: str) -> str:
     return "🟢" if direction == "LONG" else "🔴"
 
-def score_emoji(score: int) -> str:
+def score_label(score: int) -> str:
     if score >= 3:
         return "⭐⭐⭐ FUERTE"
     elif score == 2:
         return "⭐⭐ MODERADA"
     return "⭐ DÉBIL"
+
+def safe_text(text: str) -> str:
+    """Elimina caracteres Markdown que rompen el parser de Telegram."""
+    return text.replace("_", " ").replace("*", " ").replace("`", " ").replace("[", " ").replace("]", " ")
 
 
 def build_telegram_message(signal: Signal, analysis=None) -> str:
@@ -73,36 +77,34 @@ def build_telegram_message(signal: Signal, analysis=None) -> str:
     if analysis:
         decision_emoji = "✅ GO" if analysis.decision == "GO" else "❌ NO-GO"
         pip_decimals = 3 if "JPY" in signal.pair else 5
-        entry  = signal.price_float
-        sl     = entry - analysis.sl_pips * 0.0001 if signal.direction == "LONG" else entry + analysis.sl_pips * 0.0001
-        tp     = entry + analysis.tp_pips * 0.0001 if signal.direction == "LONG" else entry - analysis.tp_pips * 0.0001
-        rr     = round(analysis.tp_pips / analysis.sl_pips, 1) if analysis.sl_pips > 0 else 0
+        entry = signal.price_float
+        sl    = entry - analysis.sl_pips * 0.0001 if signal.direction == "LONG" else entry + analysis.sl_pips * 0.0001
+        tp    = entry + analysis.tp_pips * 0.0001 if signal.direction == "LONG" else entry - analysis.tp_pips * 0.0001
+        rr    = round(analysis.tp_pips / analysis.sl_pips, 1) if analysis.sl_pips > 0 else 0
+        reasoning = safe_text(analysis.reasoning)
 
-        msg = f"""
-{emoji} *{signal.direction} — {signal.pair}*
-⏰ {h_esp} España | {h_ny} NY
-
-📊 *Confluencia: {signal.score_int}/3 {score_emoji(signal.score_int)}*
-• SMC:    {smc_ok}
-• ORB:    {orb_ok}
-• BB+RSI: {bb_ok}
-
-🤖 *Análisis IA: {decision_emoji}*
-_{analysis.reasoning}_
-
-📍 Entrada: `{entry:.{pip_decimals}f}`
-🛑 Stop Loss: `{sl:.{pip_decimals}f}` ({analysis.sl_pips} pips)
-✅ Take Profit: `{tp:.{pip_decimals}f}` ({analysis.tp_pips} pips)
-📐 R:R: 1:{rr} | Riesgo: {analysis.risk_size}%
-🎯 Probabilidad IA: *{analysis.probability}%*
-""".strip()
+        msg = (
+            f"{emoji} *{signal.direction} — {signal.pair}*\n"
+            f"⏰ {h_esp} España | {h_ny} NY\n\n"
+            f"📊 *Confluencia: {signal.score_int}/3 {score_label(signal.score_int)}*\n"
+            f"• SMC:    {smc_ok}\n"
+            f"• ORB:    {orb_ok}\n"
+            f"• BB+RSI: {bb_ok}\n\n"
+            f"🤖 *IA: {decision_emoji}*\n"
+            f"{reasoning}\n\n"
+            f"📍 Entrada: `{entry:.{pip_decimals}f}`\n"
+            f"🛑 SL: `{sl:.{pip_decimals}f}` ({analysis.sl_pips} pips)\n"
+            f"✅ TP: `{tp:.{pip_decimals}f}` ({analysis.tp_pips} pips)\n"
+            f"📐 R:R 1:{rr} | Riesgo: {analysis.risk_size}%\n"
+            f"🎯 Probabilidad: *{analysis.probability}%*"
+        )
     else:
-        msg = f"""
-{emoji} *SEÑAL {signal.direction} — {signal.pair}*
-⏰ {h_esp} España | {h_ny} NY
-📊 Confluencia: {signal.score_int}/3 {score_emoji(signal.score_int)}
-🤖 _Analizando con IA..._
-""".strip()
+        msg = (
+            f"{emoji} *{signal.direction} — {signal.pair}*\n"
+            f"⏰ {h_esp} España | {h_ny} NY\n"
+            f"📊 Confluencia: {signal.score_int}/3 {score_label(signal.score_int)}\n"
+            f"🤖 Analizando con IA..."
+        )
 
     return msg
 
@@ -127,7 +129,7 @@ async def receive_signal(
 
     signal = Signal(**payload)
 
-    # Envía alerta inmediata mientras Claude analiza
+    # Mensaje inmediato mientras Claude analiza
     await send_telegram(build_telegram_message(signal))
 
     # Análisis con Claude + RAG
@@ -141,24 +143,22 @@ async def receive_signal(
             smc_active=float(signal.smc or 0) > 0,
             orb_active=float(signal.orb or 0) > 0,
             bb_rsi_active=float(signal.bb_rsi or 0) > 0,
-            daily_pnl=0.0,       # TODO Fase 4: leer de PostgreSQL
+            daily_pnl=0.0,
             daily_drawdown_pct=0.0,
             trades_today=0,
         )
-        # Envía análisis completo
         await send_telegram(build_telegram_message(signal, analysis))
-        logger.info(f"✅ Análisis completado: {analysis.decision} {analysis.probability}%")
+        logger.info(f"✅ Análisis: {analysis.decision} {analysis.probability}%")
 
     except Exception as e:
-        logger.error(f"Error en análisis IA: {e}")
-        await send_telegram(f"⚠️ Error en análisis IA: {e}\nRevisar manualmente.")
+        logger.error(f"Error análisis IA: {e}")
+        await send_telegram(f"⚠️ Error en análisis IA\nRevisar manualmente.")
 
     return {"status": "ok", "pair": signal.pair, "direction": signal.direction}
 
 
 @router.get("/test")
 async def test_signal():
-    """Simula señal 3/3 para probar el pipeline completo."""
     signal = Signal(
         direction="LONG", pair="EURUSD",
         timeframe="15", score="3", price="1.16505",
@@ -174,4 +174,4 @@ async def test_signal():
     )
 
     await send_telegram(build_telegram_message(signal, analysis))
-    return {"status": "test enviado", "decision": analysis.decision, "prob": analysis.probability}
+    return {"status": "ok", "decision": analysis.decision, "prob": analysis.probability}
