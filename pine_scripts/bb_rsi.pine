@@ -1,0 +1,3 @@
+// BB + RSI | TODO: Fase 1
+//@version=6
+indicator("BB+RSI — Trading Bot", overlay=true)
