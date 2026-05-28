@@ -9,12 +9,14 @@ from loguru import logger
 from config.settings import settings
 from api.webhook import router as webhook_router
 from execution.telegram_bot import send_telegram_startup
+from rag.indexer import index_all_documents
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup y shutdown del servidor."""
     logger.info("🚀 Trading Bot arrancando...")
+    index_all_documents()   
     await send_telegram_startup()
     yield
     logger.info("🛑 Trading Bot apagándose...")
