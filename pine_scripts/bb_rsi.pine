@@ -1,3 +1,116 @@
-// BB + RSI | TODO: Fase 1
+// ============================================================
+// BB + RSI — Bollinger Bands + RSI | Trading Bot Inteligente v1.0
+// Condición LONG: precio toca banda inferior + RSI < 35 girando al alza
+// Condición SHORT: precio toca banda superior + RSI > 65 girando a la baja
+// Temporalidad: H1 contexto, M15 entrada
+// ============================================================
 //@version=6
-indicator("BB+RSI — Trading Bot", overlay=true)
+indicator("BB+RSI — Trading Bot", overlay=true, max_bars_back=500,
+     max_labels_count=20, max_lines_count=10)
+
+// ── INPUTS ──────────────────────────────────────────────────
+// Bollinger Bands
+bb_length  = input.int(20,   "Longitud BB",        minval=5,   maxval=50,  group="Bollinger Bands")
+bb_mult    = input.float(2.0,"Desviación estándar", minval=1.0, maxval=4.0, group="Bollinger Bands")
+bb_bull_col = input.color(color.new(#00BCD4, 70), "Color zona valor alcista", group="Bollinger Bands")
+bb_bear_col = input.color(color.new(#FF9800, 70), "Color zona valor bajista", group="Bollinger Bands")
+
+// RSI
+rsi_length    = input.int(14,  "Longitud RSI",      minval=5, maxval=30,  group="RSI")
+rsi_oversold  = input.int(35,  "RSI sobrevendido",  minval=20, maxval=45, group="RSI")
+rsi_overbought = input.int(65, "RSI sobrecomprado", minval=55, maxval=80, group="RSI")
+
+// Filtro de tendencia H4 (no operar contra tendencia mayor)
+use_trend_filter = input.bool(true, "Filtro tendencia H4", group="Filtros")
+use_time_filter  = input.bool(true, "Filtro horario",       group="Filtros")
+session_valid    = input.session("0700-2100", "Sesión válida (UTC)", group="Filtros")
+
+// ── FILTROS ──────────────────────────────────────────────────
+in_session = not use_time_filter or not na(time(timeframe.period, session_valid))
+
+// Tendencia H4: EMA 50 en H4 como referencia
+ema50_h4   = request.security(syminfo.tickerid, "240", ta.ema(close, 50))
+trend_bull = not use_trend_filter or close > ema50_h4
+trend_bear = not use_trend_filter or close < ema50_h4
+
+// ── BOLLINGER BANDS ──────────────────────────────────────────
+[bb_mid, bb_upper, bb_lower] = ta.bb(close, bb_length, bb_mult)
+
+// Plots de las bandas
+plot(bb_upper, "BB Superior", color=color.new(#7C4DFF, 60), linewidth=1)
+plot(bb_mid,   "BB Media",    color=color.new(#7C4DFF, 80), linewidth=1, style=plot.style_circles)
+plot(bb_lower, "BB Inferior", color=color.new(#7C4DFF, 60), linewidth=1)
+
+// Relleno entre bandas
+bb_upper_plot = plot(bb_upper, display=display.none)
+bb_lower_plot = plot(bb_lower, display=display.none)
+fill(bb_upper_plot, bb_lower_plot, color=color.new(#7C4DFF, 95), title="Relleno BB")
+
+// ── RSI ──────────────────────────────────────────────────────
+rsi = ta.rsi(close, rsi_length)
+
+// RSI girando: compara con vela anterior
+rsi_turning_up   = rsi > rsi[1] and rsi[1] <= rsi[2]  // mínimo local
+rsi_turning_down = rsi < rsi[1] and rsi[1] >= rsi[2]  // máximo local
+
+// ── CONDICIONES DE ENTRADA ───────────────────────────────────
+// LONG: vela toca/cruza banda inferior + RSI sobrevendido girando + tendencia no bajista
+touch_lower = low <= bb_lower
+touch_upper = high >= bb_upper
+
+rsi_oversold_zone   = rsi <= rsi_oversold
+rsi_overbought_zone = rsi >= rsi_overbought
+
+// Señal: la condición debe cumplirse en la misma vela o la anterior
+bb_rsi_long  = in_session and trend_bull and
+     touch_lower and rsi_oversold_zone and
+     (rsi_turning_up or rsi > rsi[1])
+
+bb_rsi_short = in_session and trend_bear and
+     touch_upper and rsi_overbought_zone and
+     (rsi_turning_down or rsi < rsi[1])
+
+// ── VISUALIZACIÓN DE SEÑALES ─────────────────────────────────
+// Zona de valor cuando precio toca las bandas
+if touch_lower and rsi_oversold_zone and in_session
+    label.new(bar_index, low,
+         text="🎯 BB+RSI\nLONG",
+         color=color.new(#00BCD4, 20),
+         textcolor=color.white,
+         style=label.style_label_up,
+         size=size.small)
+
+if touch_upper and rsi_overbought_zone and in_session
+    label.new(bar_index, high,
+         text="🎯 BB+RSI\nSHORT",
+         color=color.new(#FF9800, 20),
+         textcolor=color.white,
+         style=label.style_label_down,
+         size=size.small)
+
+// Señal confirmada (con giro RSI)
+plotshape(bb_rsi_long,  title="BB+RSI LONG confirmado",
+     style=shape.circle, location=location.belowbar,
+     color=#00E676, size=size.tiny)
+
+plotshape(bb_rsi_short, title="BB+RSI SHORT confirmado",
+     style=shape.circle, location=location.abovebar,
+     color=#FF5252, size=size.tiny)
+
+// ── RSI EN PANEL SEPARADO (via plot invisible para referencia) ──
+// El RSI se ve mejor en un indicador separado — aquí solo la lógica
+plot(rsi_oversold_zone  and in_session ? low  : na, "Zona sobrevendida",  color=color.new(#00E676, 60), style=plot.style_circles, linewidth=3)
+plot(rsi_overbought_zone and in_session ? high : na, "Zona sobrecomprada", color=color.new(#FF5252, 60), style=plot.style_circles, linewidth=3)
+
+// ── SEÑALES PARA CONFLUENCIA ─────────────────────────────────
+plot(bb_rsi_long  ? 1 : 0, "BB_RSI_LONG",  display=display.none)
+plot(bb_rsi_short ? 1 : 0, "BB_RSI_SHORT", display=display.none)
+
+// ── ALERTAS ──────────────────────────────────────────────────
+alertcondition(bb_rsi_long,
+     title="BB+RSI — Señal LONG",
+     message='{"strategy":"BB_RSI","direction":"LONG","pair":"{{ticker}}","timeframe":"{{interval}}","price":"{{close}}","rsi":"{{plot_2}}","time":"{{time}}"}')
+
+alertcondition(bb_rsi_short,
+     title="BB+RSI — Señal SHORT",
+     message='{"strategy":"BB_RSI","direction":"SHORT","pair":"{{ticker}}","timeframe":"{{interval}}","price":"{{close}}","rsi":"{{plot_3}}","time":"{{time}}"}')

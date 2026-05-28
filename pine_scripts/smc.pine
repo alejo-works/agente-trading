@@ -1,3 +1,165 @@
-// SMC — Smart Money Concepts | TODO: Fase 1
+// ============================================================
+// SMC — Smart Money Concepts | Trading Bot Inteligente
+// Detecta: Order Blocks (OB), Fair Value Gaps (FVG), Break of Structure (BOS)
+// Temporalidad: usar en H1 (contexto H4, entrada M15)
+// Versión: 1.0 | Fase 1
+// ============================================================
 //@version=6
-indicator("SMC — Trading Bot", overlay=true)
+indicator("SMC — Trading Bot", overlay=true, max_bars_back=500)
+
+// ── INPUTS ──────────────────────────────────────────────────
+grp_ob    = "Order Blocks"
+grp_fvg   = "Fair Value Gaps"
+grp_bos   = "Break of Structure"
+grp_filt  = "Filtros"
+
+// Order Blocks
+ob_show       = input.bool(true,  "Mostrar Order Blocks",        group=grp_ob)
+ob_lookback   = input.int(10,     "Lookback velas OB",  minval=3, maxval=50, group=grp_ob)
+ob_bull_col   = input.color(color.new(#00C853, 80), "Color OB Alcista", group=grp_ob)
+ob_bear_col   = input.color(color.new(#FF1744, 80), "Color OB Bajista", group=grp_ob)
+
+// FVG
+fvg_show      = input.bool(true,  "Mostrar Fair Value Gaps",     group=grp_fvg)
+fvg_min_size  = input.float(0.0001, "Tamaño mínimo FVG (pips)",  group=grp_fvg)
+fvg_bull_col  = input.color(color.new(#00BCD4, 75), "Color FVG Alcista", group=grp_fvg)
+fvg_bear_col  = input.color(color.new(#FF9800, 75), "Color FVG Bajista", group=grp_fvg)
+
+// BOS
+bos_show      = input.bool(true,  "Mostrar Break of Structure",  group=grp_bos)
+bos_lookback  = input.int(20,     "Lookback BOS", minval=5, maxval=100, group=grp_bos)
+bos_bull_col  = input.color(#00E676, "Color BOS Alcista",        group=grp_bos)
+bos_bear_col  = input.color(#FF5252, "Color BOS Bajista",        group=grp_bos)
+
+// Filtros horarios (hora España en UTC — ajustar según verano/invierno)
+use_time_filter = input.bool(true, "Activar filtro horario",     group=grp_filt)
+// Ventanas activas (UTC): Londres 07-16, NY 13-21
+session_london = input.session("0700-1600", "Sesión Londres (UTC)", group=grp_filt)
+session_ny     = input.session("1330-2100", "Sesión NY (UTC)",      group=grp_filt)
+
+// ── FILTRO HORARIO ───────────────────────────────────────────
+in_london = not use_time_filter or not na(time(timeframe.period, session_london))
+in_ny     = not use_time_filter or not na(time(timeframe.period, session_ny))
+in_session = in_london or in_ny
+
+// ── FUNCIONES AUXILIARES ─────────────────────────────────────
+// Detecta si una vela es bajista fuerte (cuerpo > 60% del rango)
+is_strong_bear(i) =>
+    body = open[i] - close[i]
+    range_ = high[i] - low[i]
+    range_ > 0 and body / range_ > 0.6 and close[i] < open[i]
+
+// Detecta si una vela es alcista fuerte
+is_strong_bull(i) =>
+    body = close[i] - open[i]
+    range_ = high[i] - low[i]
+    range_ > 0 and body / range_ > 0.6 and close[i] > open[i]
+
+// ── ORDER BLOCKS ─────────────────────────────────────────────
+// OB Bajista: vela bajista fuerte seguida de movimiento alcista
+// OB Alcista: vela alcista fuerte seguida de movimiento bajista
+
+var float ob_bear_top = na
+var float ob_bear_bot = na
+var float ob_bull_top = na
+var float ob_bull_bot = na
+var int   ob_bear_bar = na
+var int   ob_bull_bar = na
+
+if ob_show and in_session
+    for i = 1 to ob_lookback
+        // OB Bajista: buscamos vela bajista fuerte cuyo high es roto al alza después
+        if is_strong_bear(i) and high > high[i]
+            if na(ob_bear_bar) or bar_index - i > ob_bear_bar
+                ob_bear_top := high[i]
+                ob_bear_bot := low[i]
+                ob_bear_bar := bar_index - i
+
+        // OB Alcista: buscamos vela alcista fuerte cuyo low es roto a la baja después
+        if is_strong_bull(i) and low < low[i]
+            if na(ob_bull_bar) or bar_index - i > ob_bull_bar
+                ob_bull_top := high[i]
+                ob_bull_bot := low[i]
+                ob_bull_bar := bar_index - i
+
+// Dibuja los OB como cajas
+var box ob_bear_box = na
+var box ob_bull_box = na
+
+if ob_show and not na(ob_bear_top) and barstate.islast
+    box.delete(ob_bear_box)
+    ob_bear_box := box.new(ob_bear_bar, ob_bear_top, bar_index + 5, ob_bear_bot,
+         border_color=color.new(#FF1744, 40),
+         bgcolor=ob_bear_col,
+         border_width=1)
+
+if ob_show and not na(ob_bull_top) and barstate.islast
+    box.delete(ob_bull_box)
+    ob_bull_box := box.new(ob_bull_bar, ob_bull_top, bar_index + 5, ob_bull_bot,
+         border_color=color.new(#00C853, 40),
+         bgcolor=ob_bull_col,
+         border_width=1)
+
+// ── FAIR VALUE GAPS ──────────────────────────────────────────
+// FVG Alcista: low[0] > high[2] (hueco entre vela -2 y vela actual)
+// FVG Bajista: high[0] < low[2]
+
+fvg_bull = fvg_show and low > high[2] and (low - high[2]) >= fvg_min_size
+fvg_bear = fvg_show and high < low[2] and (low[2] - high) >= fvg_min_size
+
+var box fvg_box = na
+
+if fvg_bull and in_session
+    box.new(bar_index - 2, low, bar_index + 10, high[2],
+         border_color=color.new(#00BCD4, 30),
+         bgcolor=fvg_bull_col,
+         border_width=1)
+
+if fvg_bear and in_session
+    box.new(bar_index - 2, low[2], bar_index + 10, high,
+         border_color=color.new(#FF9800, 30),
+         bgcolor=fvg_bear_col,
+         border_width=1)
+
+// ── BREAK OF STRUCTURE ───────────────────────────────────────
+// BOS Alcista: precio rompe el máximo más alto de los últimos N periodos
+// BOS Bajista: precio rompe el mínimo más bajo de los últimos N periodos
+
+highest_high = ta.highest(high, bos_lookback)[1]
+lowest_low   = ta.lowest(low,  bos_lookback)[1]
+
+bos_bull = bos_show and high > highest_high and in_session
+bos_bear = bos_show and low  < lowest_low   and in_session
+
+// Línea y etiqueta en el BOS
+if bos_bull
+    line.new(bar_index - 1, highest_high, bar_index, highest_high,
+         color=bos_bull_col, width=2, style=line.style_dashed)
+    label.new(bar_index, highest_high,
+         text="BOS ▲", color=bos_bull_col,
+         textcolor=color.white, style=label.style_label_down, size=size.small)
+
+if bos_bear
+    line.new(bar_index - 1, lowest_low, bar_index, lowest_low,
+         color=bos_bear_col, width=2, style=line.style_dashed)
+    label.new(bar_index, lowest_low,
+         text="BOS ▼", color=bos_bear_col,
+         textcolor=color.white, style=label.style_label_up, size=size.small)
+
+// ── SEÑAL DE CONFLUENCIA (para webhook Fase 1) ───────────────
+// Esta variable la usará el script de confluencia unificado
+smc_long  = bos_bull and fvg_bull and not na(ob_bull_top)
+smc_short = bos_bear and fvg_bear and not na(ob_bear_top)
+
+// Plot para que el script de confluencia pueda leerlo
+plot(smc_long  ? 1 : 0, "SMC_LONG",  display=display.none)
+plot(smc_short ? 1 : 0, "SMC_SHORT", display=display.none)
+
+// ── ALERTAS ──────────────────────────────────────────────────
+alertcondition(smc_long,
+     title="SMC — Señal LONG",
+     message='{"strategy":"SMC","direction":"LONG","pair":"{{ticker}}","timeframe":"{{interval}}","price":"{{close}}","high":"{{high}}","low":"{{low}}","time":"{{time}}"}')
+
+alertcondition(smc_short,
+     title="SMC — Señal SHORT",
+     message='{"strategy":"SMC","direction":"SHORT","pair":"{{ticker}}","timeframe":"{{interval}}","price":"{{close}}","high":"{{high}}","low":"{{low}}","time":"{{time}}"}')

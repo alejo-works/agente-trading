@@ -1,0 +1,250 @@
+// ============================================================
+// CONFLUENCIA — Trading Bot Inteligente v1.0
+// Lee las señales de SMC, ORB y BB+RSI
+// Muestra tabla resumen y genera alerta unificada
+// ============================================================
+//@version=6
+indicator("Confluencia — Trading Bot", overlay=true, max_bars_back=500)
+
+// ── INPUTS ──────────────────────────────────────────────────
+tabla_pos   = input.string("top_right", "Posición tabla",
+     options=["top_right","top_left","bottom_right","bottom_left"],
+     group="Visual")
+show_tabla  = input.bool(true, "Mostrar tabla", group="Visual")
+
+// Umbrales de confluencia
+min_score   = input.int(2, "Score mínimo para alerta (2 o 3)",
+     minval=2, maxval=3, group="Confluencia")
+
+// Filtro horario
+use_filter  = input.bool(true, "Filtro horario activo", group="Filtros")
+session_lon = input.session("0700-1600", "Londres (UTC)", group="Filtros")
+session_ny  = input.session("1330-2100", "Nueva York (UTC)", group="Filtros")
+
+// ── SESIÓN ───────────────────────────────────────────────────
+in_session = not use_filter or
+     not na(time(timeframe.period, session_lon)) or
+     not na(time(timeframe.period, session_ny))
+
+// ── LEER SEÑALES DE LOS 3 SCRIPTS ───────────────────────────
+// Cada script exporta sus señales via plot(..., display=display.none)
+// Aquí las leemos con request.security o replicamos la lógica
+
+// SMC — replicamos BOS como proxy de señal
+bos_lookback = 30
+ph = ta.pivothigh(high, bos_lookback, bos_lookback)
+pl = ta.pivotlow(low,   bos_lookback, bos_lookback)
+
+var float last_ph = na
+var float last_pl = na
+
+if not na(ph)
+    last_ph := ph
+if not na(pl)
+    last_pl := pl
+
+smc_long  = in_session and not na(last_ph) and close > last_ph and close[1] <= last_ph
+smc_short = in_session and not na(last_pl) and close < last_pl and close[1] >= last_pl
+
+var bool smc_long_active  = false
+var bool smc_short_active = false
+
+if smc_long
+    smc_long_active  := true
+    smc_short_active := false
+if smc_short
+    smc_short_active := true
+    smc_long_active  := false
+
+// ORB — rango apertura NY
+orb_session   = "1330-1400"
+valid_session = "1330-2100"
+in_orb   = not na(time(timeframe.period, orb_session))
+in_valid = not na(time(timeframe.period, valid_session))
+
+var float orb_high = na
+var float orb_low  = na
+var bool  orb_set  = false
+
+is_new_orb = in_orb and not in_orb[1]
+
+if is_new_orb
+    orb_high := high
+    orb_low  := low
+    orb_set  := false
+
+if in_orb and not is_new_orb and not na(orb_high)
+    orb_high := math.max(orb_high, high)
+    orb_low  := math.min(orb_low,  low)
+
+if not in_orb and in_orb[1]
+    orb_set := true
+
+orb_long  = orb_set and in_valid and not in_orb and
+     close > orb_high and close[1] <= orb_high
+orb_short = orb_set and in_valid and not in_orb and
+     close < orb_low  and close[1] >= orb_low
+
+var bool orb_long_active  = false
+var bool orb_short_active = false
+
+if orb_long
+    orb_long_active  := true
+    orb_short_active := false
+if orb_short
+    orb_short_active := true
+    orb_long_active  := false
+
+// BB + RSI
+bb_length = 20
+[_, bb_upper, bb_lower] = ta.bb(close, bb_length, 2.0)
+rsi = ta.rsi(close, 14)
+
+bb_rsi_long  = in_session and low <= bb_lower and rsi <= 35 and (rsi > rsi[1])
+bb_rsi_short = in_session and high >= bb_upper and rsi >= 65 and (rsi < rsi[1])
+
+var bool bb_long_active  = false
+var bool bb_short_active = false
+
+if bb_rsi_long
+    bb_long_active  := true
+    bb_short_active := false
+if bb_rsi_short
+    bb_short_active := true
+    bb_long_active  := false
+
+// Reset diario de los estados activos
+is_new_day = dayofweek != dayofweek[1]
+if is_new_day
+    smc_long_active  := false
+    smc_short_active := false
+    orb_long_active  := false
+    orb_short_active := false
+    bb_long_active   := false
+    bb_short_active  := false
+
+// ── SCORE DE CONFLUENCIA ─────────────────────────────────────
+score_long  = (smc_long_active  ? 1 : 0) +
+              (orb_long_active  ? 1 : 0) +
+              (bb_long_active   ? 1 : 0)
+
+score_short = (smc_short_active ? 1 : 0) +
+              (orb_short_active ? 1 : 0) +
+              (bb_short_active  ? 1 : 0)
+
+signal_long  = in_session and score_long  >= min_score
+signal_short = in_session and score_short >= min_score
+
+// Señal nueva (solo dispara una vez por cambio)
+new_long  = signal_long  and not signal_long[1]
+new_short = signal_short and not signal_short[1]
+
+// ── TABLA RESUMEN ────────────────────────────────────────────
+var table t = na
+
+pos = tabla_pos == "top_right"    ? position.top_right    :
+      tabla_pos == "top_left"     ? position.top_left     :
+      tabla_pos == "bottom_right" ? position.bottom_right :
+      position.bottom_left
+
+if show_tabla and barstate.islast
+    table.delete(t)
+    t := table.new(pos, 3, 6,
+         bgcolor=color.new(#1a1a2e, 10),
+         border_color=color.new(#7C4DFF, 60),
+         border_width=1,
+         frame_color=color.new(#7C4DFF, 40),
+         frame_width=2)
+
+    // Cabecera
+    table.cell(t, 0, 0, "ESTRATEGIA", text_color=#ffffff, text_size=size.small,
+         bgcolor=color.new(#7C4DFF, 40), text_halign=text.align_center)
+    table.cell(t, 1, 0, "LONG",       text_color=#00E676, text_size=size.small,
+         bgcolor=color.new(#7C4DFF, 40), text_halign=text.align_center)
+    table.cell(t, 2, 0, "SHORT",      text_color=#FF5252, text_size=size.small,
+         bgcolor=color.new(#7C4DFF, 40), text_halign=text.align_center)
+
+    // SMC
+    table.cell(t, 0, 1, "SMC",
+         text_color=#ffffff, text_size=size.small, text_halign=text.align_left)
+    table.cell(t, 1, 1, smc_long_active  ? "✅" : "—",
+         text_color=smc_long_active  ? #00E676 : #666666, text_size=size.normal,
+         text_halign=text.align_center)
+    table.cell(t, 2, 1, smc_short_active ? "✅" : "—",
+         text_color=smc_short_active ? #FF5252 : #666666, text_size=size.normal,
+         text_halign=text.align_center)
+
+    // ORB
+    table.cell(t, 0, 2, "ORB",
+         text_color=#ffffff, text_size=size.small, text_halign=text.align_left)
+    table.cell(t, 1, 2, orb_long_active  ? "✅" : "—",
+         text_color=orb_long_active  ? #00E676 : #666666, text_size=size.normal,
+         text_halign=text.align_center)
+    table.cell(t, 2, 2, orb_short_active ? "✅" : "—",
+         text_color=orb_short_active ? #FF5252 : #666666, text_size=size.normal,
+         text_halign=text.align_center)
+
+    // BB+RSI
+    table.cell(t, 0, 3, "BB+RSI",
+         text_color=#ffffff, text_size=size.small, text_halign=text.align_left)
+    table.cell(t, 1, 3, bb_long_active  ? "✅" : "—",
+         text_color=bb_long_active  ? #00E676 : #666666, text_size=size.normal,
+         text_halign=text.align_center)
+    table.cell(t, 2, 3, bb_short_active ? "✅" : "—",
+         text_color=bb_short_active ? #FF5252 : #666666, text_size=size.normal,
+         text_halign=text.align_center)
+
+    // Separador
+    table.cell(t, 0, 4, "", bgcolor=color.new(#7C4DFF, 70))
+    table.cell(t, 1, 4, "", bgcolor=color.new(#7C4DFF, 70))
+    table.cell(t, 2, 4, "", bgcolor=color.new(#7C4DFF, 70))
+
+    // Score final
+    score_txt  = score_long >= min_score ? "🟢 LONG " + str.tostring(score_long) + "/3" :
+                 score_short >= min_score ? "🔴 SHORT " + str.tostring(score_short) + "/3" :
+                 "⏳ " + str.tostring(math.max(score_long, score_short)) + "/3"
+    score_col  = score_long >= min_score ? #00E676 :
+                 score_short >= min_score ? #FF5252 : #888888
+
+    table.cell(t, 0, 5, "SCORE",
+         text_color=#ffffff, text_size=size.small,
+         bgcolor=color.new(#1a1a2e, 0), text_halign=text.align_left)
+    table.cell(t, 1, 5, score_txt, text_color=score_col, text_size=size.small,
+         bgcolor=color.new(#1a1a2e, 0), text_halign=text.align_center)
+    table.cell(t, 2, 5, in_session ? "🟢 ON" : "🔴 OFF",
+         text_color=in_session ? #00E676 : #FF5252, text_size=size.tiny,
+         bgcolor=color.new(#1a1a2e, 0), text_halign=text.align_center)
+
+// ── SEÑALES VISUALES EN GRÁFICO ──────────────────────────────
+plotshape(new_long,  title="Confluencia LONG",
+     style=shape.labelup, location=location.belowbar,
+     color=#00E676, textcolor=color.black,
+     text=score_long == 3 ? "⭐⭐⭐" : "⭐⭐",
+     size=size.normal)
+
+plotshape(new_short, title="Confluencia SHORT",
+     style=shape.labeldown, location=location.abovebar,
+     color=#FF5252, textcolor=color.white,
+     text=score_short == 3 ? "⭐⭐⭐" : "⭐⭐",
+     size=size.normal)
+
+// ── PLOTS PARA WEBHOOK ───────────────────────────────────────
+plot(score_long,  "SCORE_LONG",  display=display.none)
+plot(score_short, "SCORE_SHORT", display=display.none)
+
+// ── ALERTAS UNIFICADAS ───────────────────────────────────────
+alertcondition(new_long,
+     title="🟢 CONFLUENCIA LONG",
+     message='{"type":"CONFLUENCIA","direction":"LONG","pair":"{{ticker}}","timeframe":"{{interval}}","score":"{{plot_0}}","price":"{{close}}","time":"{{time}}","smc":"{{plot_2}}","orb":"{{plot_4}}","bb_rsi":"{{plot_6}}"}')
+
+alertcondition(new_short,
+     title="🔴 CONFLUENCIA SHORT",
+     message='{"type":"CONFLUENCIA","direction":"SHORT","pair":"{{ticker}}","timeframe":"{{interval}}","score":"{{plot_1}}","price":"{{close}}","time":"{{time}}","smc":"{{plot_3}}","orb":"{{plot_5}}","bb_rsi":"{{plot_7}}"}')
+
+alertcondition(new_long and score_long == 3,
+     title="⭐⭐⭐ SEÑAL FUERTE LONG",
+     message='{"type":"CONFLUENCIA","direction":"LONG","pair":"{{ticker}}","timeframe":"{{interval}}","score":"3","price":"{{close}}","time":"{{time}}"}')
+
+alertcondition(new_short and score_short == 3,
+     title="⭐⭐⭐ SEÑAL FUERTE SHORT",
+     message='{"type":"CONFLUENCIA","direction":"SHORT","pair":"{{ticker}}","timeframe":"{{interval}}","score":"3","price":"{{close}}","time":"{{time}}"}')

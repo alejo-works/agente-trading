@@ -1,3 +1,199 @@
-// ORB — Opening Range Breakout | TODO: Fase 1
+// ============================================================
+// ORB — Opening Range Breakout | Trading Bot Inteligente v1.0
+// Rango: primeros 30min apertura NY (13:30-14:00 UTC)
+// Hora España: 14:30-15:00 CET invierno | 15:30-16:00 CEST verano
+// Temporalidad: M5 para definir rango, M15 para entrada
+// ============================================================
 //@version=6
-indicator("ORB — Trading Bot", overlay=true)
+indicator("ORB — Trading Bot", overlay=true, max_bars_back=500,
+     max_boxes_count=20, max_lines_count=20, max_labels_count=20)
+
+// ── INPUTS ──────────────────────────────────────────────────
+orb_minutes   = input.int(30,    "Minutos del rango ORB",    minval=15, maxval=60, group="ORB")
+show_range    = input.bool(true, "Mostrar caja del rango",                          group="ORB")
+show_levels   = input.bool(true, "Mostrar líneas High/Low",                         group="ORB")
+show_targets  = input.bool(true, "Mostrar targets (1R y 2R)",                       group="ORB")
+range_col     = input.color(color.new(#7C4DFF, 85), "Color rango ORB",              group="ORB")
+bull_col      = input.color(#00E676, "Color breakout alcista",                      group="ORB")
+bear_col      = input.color(#FF5252, "Color breakout bajista",                      group="ORB")
+
+// Sesión apertura NY en UTC
+// 13:30 UTC = 14:30 CET (invierno) = 15:30 CEST (verano)
+orb_session   = input.session("1330-1400", "Ventana ORB (UTC)", group="ORB")
+valid_session = input.session("1330-2100", "Sesión válida para breakout (UTC)", group="ORB")
+
+// ── DETECCIÓN DE VENTANA ORB ─────────────────────────────────
+in_orb    = not na(time(timeframe.period, orb_session))
+in_valid  = not na(time(timeframe.period, valid_session))
+
+// ── CÁLCULO DEL RANGO ────────────────────────────────────────
+var float orb_high = na
+var float orb_low  = na
+var bool  orb_set  = false   // true cuando el rango está cerrado
+var int   orb_start_bar = na
+var int   orb_end_bar   = na
+
+// Detecta inicio de nueva sesión ORB (reset diario)
+is_new_orb_session = in_orb and not in_orb[1]
+
+if is_new_orb_session
+    orb_high    := high
+    orb_low     := low
+    orb_set     := false
+    orb_start_bar := bar_index
+
+// Expande el rango durante la ventana ORB
+if in_orb and not is_new_orb_session
+    orb_high := math.max(orb_high, high)
+    orb_low  := math.min(orb_low,  low)
+
+// Cierra el rango cuando termina la ventana
+if not in_orb and in_orb[1] and not na(orb_high)
+    orb_set       := true
+    orb_end_bar   := bar_index
+
+// ── DIBUJA LA CAJA DEL RANGO ─────────────────────────────────
+var box orb_box = na
+
+if orb_set and show_range and not na(orb_start_bar)
+    // Solo redibuja cuando se cierra el rango
+    if in_orb[1] and not in_orb
+        box.delete(orb_box)
+        orb_box := box.new(
+             orb_start_bar, orb_high,
+             bar_index + 50, orb_low,
+             bgcolor      = range_col,
+             border_color = color.new(#7C4DFF, 40),
+             border_width = 1)
+
+// Extiende la caja hacia la derecha en cada vela
+if not na(orb_box) and orb_set
+    box.set_right(orb_box, bar_index + 50)
+
+// ── LÍNEAS HIGH Y LOW ────────────────────────────────────────
+var line orb_high_line = na
+var line orb_low_line  = na
+var label orb_high_lbl = na
+var label orb_low_lbl  = na
+
+if orb_set and show_levels and in_orb[1] and not in_orb
+    line.delete(orb_high_line)
+    line.delete(orb_low_line)
+    label.delete(orb_high_lbl)
+    label.delete(orb_low_lbl)
+
+    orb_high_line := line.new(orb_end_bar, orb_high, bar_index + 50, orb_high,
+         color=color.new(bull_col, 30), width=1, style=line.style_dashed)
+    orb_low_line  := line.new(orb_end_bar, orb_low,  bar_index + 50, orb_low,
+         color=color.new(bear_col, 30), width=1, style=line.style_dashed)
+
+    orb_high_lbl := label.new(bar_index + 2, orb_high, "ORB High",
+         color=color.new(bull_col, 60), textcolor=color.white,
+         style=label.style_label_left, size=size.tiny)
+    orb_low_lbl  := label.new(bar_index + 2, orb_low, "ORB Low",
+         color=color.new(bear_col, 60), textcolor=color.white,
+         style=label.style_label_left, size=size.tiny)
+
+// Extiende líneas en cada vela
+if not na(orb_high_line)
+    line.set_x2(orb_high_line, bar_index + 50)
+    line.set_x2(orb_low_line,  bar_index + 50)
+    label.set_x(orb_high_lbl, bar_index + 2)
+    label.set_x(orb_low_lbl,  bar_index + 2)
+
+// ── BREAKOUT ─────────────────────────────────────────────────
+orb_range = orb_high - orb_low
+
+// Breakout válido: cierre fuera del rango durante sesión válida (no durante el ORB)
+orb_bull_bo = orb_set and in_valid and not in_orb and
+     close > orb_high and close[1] <= orb_high and orb_range > 0
+
+orb_bear_bo = orb_set and in_valid and not in_orb and
+     close < orb_low  and close[1] >= orb_low  and orb_range > 0
+
+// ── TARGETS (1R y 2R) ────────────────────────────────────────
+var line tp1_line = na
+var line tp2_line = na
+var line sl_line  = na
+var label tp1_lbl = na
+var label tp2_lbl = na
+var label sl_lbl  = na
+
+if orb_bull_bo and show_targets
+    tp1 = orb_high + orb_range         // 1R
+    tp2 = orb_high + orb_range * 2     // 2R
+    sl  = orb_low                      // SL debajo del low del rango
+
+    line.delete(tp1_line) 
+    line.delete(tp2_line)
+    line.delete(sl_line)
+    label.delete(tp1_lbl)
+    label.delete(tp2_lbl)
+    label.delete(sl_lbl)
+
+    tp1_line := line.new(bar_index, tp1, bar_index + 30, tp1,
+         color=color.new(bull_col, 50), width=1, style=line.style_dotted)
+    tp2_line := line.new(bar_index, tp2, bar_index + 30, tp2,
+         color=bull_col, width=2, style=line.style_dotted)
+    sl_line  := line.new(bar_index, sl,  bar_index + 30, sl,
+         color=color.new(bear_col, 50), width=1, style=line.style_dotted)
+
+    tp1_lbl  := label.new(bar_index + 31, tp1, "TP1 (1R)",
+         color=color.new(bull_col, 60), textcolor=color.white,
+         style=label.style_label_left, size=size.tiny)
+    tp2_lbl  := label.new(bar_index + 31, tp2, "TP2 (2R)",
+         color=bull_col, textcolor=color.black,
+         style=label.style_label_left, size=size.tiny)
+    sl_lbl   := label.new(bar_index + 31, sl, "SL",
+         color=color.new(bear_col, 60), textcolor=color.white,
+         style=label.style_label_left, size=size.tiny)
+
+if orb_bear_bo and show_targets
+    tp1 = orb_low  - orb_range
+    tp2 = orb_low  - orb_range * 2
+    sl  = orb_high
+
+    line.delete(tp1_line)
+    line.delete(tp2_line)
+    line.delete(sl_line)
+    label.delete(tp1_lbl)
+    label.delete(tp2_lbl)
+    label.delete(sl_lbl)
+
+    tp1_line := line.new(bar_index, tp1, bar_index + 30, tp1,
+         color=color.new(bear_col, 50), width=1, style=line.style_dotted)
+    tp2_line := line.new(bar_index, tp2, bar_index + 30, tp2,
+         color=bear_col, width=2, style=line.style_dotted)
+    sl_line  := line.new(bar_index, sl,  bar_index + 30, sl,
+         color=color.new(bull_col, 50), width=1, style=line.style_dotted)
+
+    tp1_lbl  := label.new(bar_index + 31, tp1, "TP1 (1R)",
+         color=color.new(bear_col, 60), textcolor=color.white,
+         style=label.style_label_left, size=size.tiny)
+    tp2_lbl  := label.new(bar_index + 31, tp2, "TP2 (2R)",
+         color=bear_col, textcolor=color.white,
+         style=label.style_label_left, size=size.tiny)
+    sl_lbl   := label.new(bar_index + 31, sl, "SL",
+         color=color.new(bull_col, 60), textcolor=color.white,
+         style=label.style_label_left, size=size.tiny)
+
+// ── SEÑALES ──────────────────────────────────────────────────
+plot(orb_bull_bo ? 1 : 0, "ORB_LONG",  display=display.none)
+plot(orb_bear_bo ? 1 : 0, "ORB_SHORT", display=display.none)
+
+// Triángulos en el gráfico para ver breakouts de un vistazo
+plotshape(orb_bull_bo, title="ORB Breakout ▲",
+     style=shape.triangleup, location=location.belowbar,
+     color=bull_col, size=size.small)
+plotshape(orb_bear_bo, title="ORB Breakout ▼",
+     style=shape.triangledown, location=location.abovebar,
+     color=bear_col, size=size.small)
+
+// ── ALERTAS ──────────────────────────────────────────────────
+alertcondition(orb_bull_bo,
+     title="ORB — Breakout LONG",
+     message='{"strategy":"ORB","direction":"LONG","pair":"{{ticker}}","timeframe":"{{interval}}","price":"{{close}}","orb_high":"{{plot_0}}","time":"{{time}}"}')
+
+alertcondition(orb_bear_bo,
+     title="ORB — Breakout SHORT",
+     message='{"strategy":"ORB","direction":"SHORT","pair":"{{ticker}}","timeframe":"{{interval}}","price":"{{close}}","orb_low":"{{plot_1}}","time":"{{time}}"}')
