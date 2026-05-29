@@ -262,3 +262,34 @@ if __name__ == "__main__":
     print(f"   Railway llamará a este agente para ejecutar órdenes")
     print(f"   Mantén esta ventana abierta mientras operas\n")
     uvicorn.run(app, host="0.0.0.0", port=AGENT_PORT)
+
+
+@app.get("/history")
+async def get_history(x_agent_secret: str = Header(...)):
+    """Devuelve las operaciones cerradas de hoy."""
+    verify_secret(x_agent_secret)
+    ensure_connected()
+
+    from datetime import datetime, timezone
+    import time
+
+    # Inicio del día en UTC
+    now = datetime.now(timezone.utc)
+    start_of_day = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
+    from_timestamp = int(start_of_day.timestamp())
+
+    deals = mt5.history_deals_get(from_timestamp, int(time.time()))
+    if deals is None:
+        return {"deals": [], "count": 0}
+
+    result = []
+    for d in deals:
+        if d.entry == 1:  # entry=1 significa cierre de posición
+            result.append({
+                "ticket":     d.position_id,
+                "symbol":     d.symbol,
+                "profit":     d.profit,
+                "close_time": datetime.fromtimestamp(d.time).isoformat(),
+            })
+
+    return {"deals": result, "count": len(result)}
