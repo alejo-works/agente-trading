@@ -135,7 +135,7 @@ async def open_order(req: OrderRequest, x_agent_secret: str = Header(...)):
         "magic":        234000,       # identificador del bot
         "comment":      req.comment,
         "type_time":    mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_IOC,
+        "type_filling": mt5.ORDER_FILLING_FOK,
     }
 
     result = mt5.order_send(request)
@@ -187,7 +187,7 @@ async def close_order(req: CloseRequest, x_agent_secret: str = Header(...)):
         "magic":        234000,
         "comment":      "Bot close",
         "type_time":    mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_IOC,
+        "type_filling": mt5.ORDER_FILLING_FOK,
     }
 
     result = mt5.order_send(request)
@@ -262,4 +262,3 @@ if __name__ == "__main__":
     print(f"   Railway llamará a este agente para ejecutar órdenes")
     print(f"   Mantén esta ventana abierta mientras operas\n")
     uvicorn.run(app, host="0.0.0.0", port=AGENT_PORT)
-    

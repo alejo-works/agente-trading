@@ -1,6 +1,7 @@
 """
-Webhook — recibe señales de TradingView y las procesa con IA.
+Webhook — recibe señales de TradingView y callbacks de Telegram.
 Fase 2: análisis completo con Claude + RAG.
+Fase 3: botones EJECUTAR / IGNORAR conectados a MT5.
 """
 from fastapi import APIRouter, Request, HTTPException, Header
 from loguru import logger
@@ -10,7 +11,7 @@ from datetime import datetime
 import pytz
 
 from config.settings import settings
-from execution.telegram_bot import send_telegram
+from execution.telegram_bot import send_telegram, send_signal_alert, handle_telegram_callback
 from ai.analyzer import analyze_signal
 
 router = APIRouter()
@@ -67,6 +68,7 @@ def safe_text(text: str) -> str:
 
 
 def build_telegram_message(signal: Signal, analysis=None) -> str:
+    """Mensaje de texto plano (sin botones) — usado para el aviso inicial mientras Claude analiza."""
     emoji  = direction_emoji(signal.direction)
     h_esp  = hora_espana()
     h_ny   = hora_ny()
@@ -109,6 +111,8 @@ def build_telegram_message(signal: Signal, analysis=None) -> str:
     return msg
 
 
+# ── SEÑALES DE TRADINGVIEW ────────────────────────────────────
+
 @router.post("/signal")
 async def receive_signal(
     request: Request,
@@ -147,31 +151,117 @@ async def receive_signal(
             daily_drawdown_pct=0.0,
             trades_today=0,
         )
-        await send_telegram(build_telegram_message(signal, analysis))
         logger.info(f"✅ Análisis: {analysis.decision} {analysis.probability}%")
+
+        # Calcular SL y TP en precio real
+        entry = signal.price_float
+        sl = (entry - analysis.sl_pips * 0.0001
+              if signal.direction == "LONG"
+              else entry + analysis.sl_pips * 0.0001)
+        tp = (entry + analysis.tp_pips * 0.0001
+              if signal.direction == "LONG"
+              else entry - analysis.tp_pips * 0.0001)
+
+        # Calcular lote (1% de riesgo con $10,000)
+        risk_usd = 10000 * (analysis.risk_size / 100)
+        lot_size = round(risk_usd / (analysis.sl_pips * 10), 2)
+        lot_size = max(0.01, min(lot_size, 2.0))  # entre 0.01 y 2.0
+
+        # Estrategias activas
+        strategies = []
+        if float(signal.smc or 0) > 0:   strategies.append("SMC")
+        if float(signal.orb or 0) > 0:   strategies.append("ORB")
+        if float(signal.bb_rsi or 0) > 0: strategies.append("BB+RSI")
+
+        if analysis.decision == "GO":
+            # Enviar alerta CON botones EJECUTAR / IGNORAR
+            await send_signal_alert(
+                signal={
+                    "symbol":     signal.pair,
+                    "direction":  "BUY" if signal.direction == "LONG" else "SELL",
+                    "entry":      entry,
+                    "sl":         round(sl, 5),
+                    "tp":         round(tp, 5),
+                    "lot_size":   lot_size,
+                    "score":      signal.score_int,
+                    "strategies": strategies,
+                },
+                analysis={
+                    "probability": analysis.probability,
+                    "decision":    analysis.decision,
+                    "reasoning":   safe_text(analysis.reasoning),
+                },
+            )
+        else:
+            # NO-GO: enviar mensaje informativo sin botones
+            await send_telegram(build_telegram_message(signal, analysis))
 
     except Exception as e:
         logger.error(f"Error análisis IA: {e}")
-        await send_telegram(f"⚠️ Error en análisis IA\nRevisar manualmente.")
+        await send_telegram("⚠️ Error en análisis IA\nRevisar manualmente.")
 
     return {"status": "ok", "pair": signal.pair, "direction": signal.direction}
 
 
+# ── CALLBACKS DE TELEGRAM (botones) ──────────────────────────
+
+@router.post("/telegram")
+async def telegram_callback(request: Request):
+    """
+    Recibe los callbacks de Telegram cuando el usuario pulsa
+    EJECUTAR o IGNORAR en la alerta de señal.
+
+    Este endpoint debe registrarse como webhook en Telegram:
+    https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://TU-RAILWAY.app/webhook/telegram
+    """
+    try:
+        update = await request.json()
+        logger.info(f"Callback Telegram: {update}")
+        await handle_telegram_callback(update)
+        return {"ok": True}
+    except Exception as e:
+        logger.error(f"Error procesando callback Telegram: {e}")
+        return {"ok": False, "error": str(e)}
+
+
+# ── TEST ──────────────────────────────────────────────────────
+
 @router.get("/test")
 async def test_signal():
+    """Simula una señal 3/3 completa con botones EJECUTAR / IGNORAR."""
     signal = Signal(
         direction="LONG", pair="EURUSD",
         timeframe="15", score="3", price="1.16505",
         smc="1", orb="1", bb_rsi="1"
     )
 
+    # Aviso inmediato
     await send_telegram(build_telegram_message(signal))
 
+    # Análisis IA
     analysis = await analyze_signal(
         direction="LONG", pair="EURUSD",
         price=1.16505, score=3, timeframe="15",
         smc_active=True, orb_active=True, bb_rsi_active=True,
     )
 
-    await send_telegram(build_telegram_message(signal, analysis))
+    # Alerta con botones
+    await send_signal_alert(
+        signal={
+            "symbol":     "EURUSD",
+            "direction":  "BUY",
+            "entry":      1.16505,
+            "sl":         1.16305,
+            "tp":         1.16905,
+            "lot_size":   0.10,
+            "score":      3,
+            "strategies": ["SMC", "ORB", "BB+RSI"],
+        },
+        analysis={
+            "probability": analysis.probability,
+            "decision":    analysis.decision,
+            "reasoning":   safe_text(analysis.reasoning),
+        },
+    )
+
     return {"status": "ok", "decision": analysis.decision, "prob": analysis.probability}
