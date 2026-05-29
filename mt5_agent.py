@@ -255,15 +255,6 @@ async def get_account(x_agent_secret: str = Header(...)):
                           if info.balance > 0 else 0,
     }
 
-
-# ── ARRANQUE DEL SERVIDOR ─────────────────────────────────────
-if __name__ == "__main__":
-    print(f"🤖 MT5 Agent arrancando en http://localhost:{AGENT_PORT}")
-    print(f"   Railway llamará a este agente para ejecutar órdenes")
-    print(f"   Mantén esta ventana abierta mientras operas\n")
-    uvicorn.run(app, host="0.0.0.0", port=AGENT_PORT)
-
-
 @app.get("/history")
 async def get_history(x_agent_secret: str = Header(...)):
     """Devuelve las operaciones cerradas de hoy."""
@@ -293,3 +284,11 @@ async def get_history(x_agent_secret: str = Header(...)):
             })
 
     return {"deals": result, "count": len(result)}
+# ── ARRANQUE DEL SERVIDOR ─────────────────────────────────────
+if __name__ == "__main__":
+    print(f"🤖 MT5 Agent arrancando en http://localhost:{AGENT_PORT}")
+    print(f"   Railway llamará a este agente para ejecutar órdenes")
+    print(f"   Mantén esta ventana abierta mientras operas\n")
+    uvicorn.run(app, host="0.0.0.0", port=AGENT_PORT)
+
+
