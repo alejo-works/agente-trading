@@ -257,33 +257,59 @@ async def get_account(x_agent_secret: str = Header(...)):
 
 @app.get("/history")
 async def get_history(x_agent_secret: str = Header(...)):
-    """Devuelve las operaciones cerradas de hoy."""
+    """Devuelve las operaciones cerradas con su P&L real."""
     verify_secret(x_agent_secret)
     ensure_connected()
 
-    from datetime import datetime, timezone
     import time
 
-    # Inicio del día en UTC
-    now = datetime.now(timezone.utc)
-    start_of_day = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
-    from_timestamp = int(start_of_day.timestamp())
+    from_timestamp = int(time.time()) - 172800
+    to_timestamp   = int(time.time())
 
-    deals = mt5.history_deals_get(from_timestamp, int(time.time()))
+    deals = mt5.history_deals_get(from_timestamp, to_timestamp)
     if deals is None:
         return {"deals": [], "count": 0}
 
     result = []
     for d in deals:
-        if d.entry == 1:  # entry=1 significa cierre de posición
+        if d.entry == 1 and d.symbol != "":
             result.append({
                 "ticket":     d.position_id,
                 "symbol":     d.symbol,
-                "profit":     d.profit,
+                "profit":     round(d.profit, 2),
                 "close_time": datetime.fromtimestamp(d.time).isoformat(),
             })
 
     return {"deals": result, "count": len(result)}
+
+@app.get("/debug/history")
+async def debug_history(x_agent_secret: str = Header(...)):
+    verify_secret(x_agent_secret)
+    import time
+    
+    # Probar con rango amplio: últimas 24 horas
+    from_ts = int(time.time()) - 86400
+    to_ts   = int(time.time())
+    
+    deals = mt5.history_deals_get(from_ts, to_ts)
+    
+    if deals is None:
+        return {"error": str(mt5.last_error()), "deals": None}
+    
+    return {
+        "count": len(deals),
+        "deals_raw": [
+            {
+                "ticket":      d.ticket,
+                "position_id": d.position_id,
+                "symbol":      d.symbol,
+                "profit":      d.profit,
+                "entry":       d.entry,
+                "time":        d.time,
+            }
+            for d in deals
+        ]
+    }
 # ── ARRANQUE DEL SERVIDOR ─────────────────────────────────────
 if __name__ == "__main__":
     print(f"🤖 MT5 Agent arrancando en http://localhost:{AGENT_PORT}")
