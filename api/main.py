@@ -1,6 +1,7 @@
 """
 Servidor principal FastAPI — Trading Bot Inteligente
 """
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,12 +12,15 @@ from api.webhook import router as webhook_router
 from execution.telegram_bot import send_telegram_startup
 from rag.indexer import index_all_documents
 
+from execution.mt5_client import mt5_client
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup y shutdown del servidor."""
     logger.info("🚀 Trading Bot arrancando...")
-    index_all_documents()   
+    index_all_documents()
+    asyncio.create_task(mt5_client.start_monitor())    
     await send_telegram_startup()
     yield
     logger.info("🛑 Trading Bot apagándose...")
