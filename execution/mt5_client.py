@@ -14,32 +14,19 @@ from config.settings import settings
 
 
 class MT5Client:
-    """
-    Cliente HTTP que se comunica con el MT5 Agent en Windows.
-    Railway no puede correr MT5 directamente (solo Windows),
-    por eso usamos este patrón agente-cliente.
-    """
-
     def __init__(self):
         self.base_url = settings.mt5_agent_url.rstrip("/")
         self.secret   = settings.mt5_agent_secret
         self.headers  = {"x-agent-secret": self.secret, "ngrok-skip-browser-warning": "true"}
         self.timeout  = 15.0
-
-        # Tickets que el monitor está vigilando activamente
-        # clave: ticket, valor: dict con symbol, sl, tp, lot_size
         self._monitored: dict[int, dict] = {}
 
     # ── HEALTH ────────────────────────────────────────────────
 
     async def health_check(self) -> dict:
-        """Verifica que el agente y MT5 están disponibles."""
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                r = await client.get(
-                    f"{self.base_url}/health",
-                    headers=self.headers,
-                )
+                r = await client.get(f"{self.base_url}/health", headers=self.headers)
                 r.raise_for_status()
                 return r.json()
         except httpx.ConnectError:
@@ -49,55 +36,24 @@ class MT5Client:
 
     # ── ÓRDENES ───────────────────────────────────────────────
 
-    async def open_order(
-        self,
-        symbol: str,
-        direction: str,
-        lot_size: float,
-        sl_price: float,
-        tp_price: float,
-        comment: str = "TradingBot",
-    ) -> dict:
-        """
-        Abre una orden de mercado y la añade al monitor automáticamente.
-        """
+    async def open_order(self, symbol, direction, lot_size, sl_price, tp_price, comment="TradingBot") -> dict:
         payload = {
-            "symbol":    symbol,
-            "direction": direction,
-            "lot_size":  lot_size,
-            "sl_price":  sl_price,
-            "tp_price":  tp_price,
-            "comment":   comment,
+            "symbol": symbol, "direction": direction, "lot_size": lot_size,
+            "sl_price": sl_price, "tp_price": tp_price, "comment": comment,
         }
-
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                r = await client.post(
-                    f"{self.base_url}/order/open",
-                    json=payload,
-                    headers=self.headers,
-                )
+                r = await client.post(f"{self.base_url}/order/open", json=payload, headers=self.headers)
                 r.raise_for_status()
                 result = r.json()
-                logger.info(
-                    f"✅ Orden ejecutada — {symbol} {direction} "
-                    f"{lot_size} lotes | Ticket: {result['ticket']}"
-                )
-
-                # Añadir al monitor automáticamente
                 ticket = result["ticket"]
+                logger.info(f"✅ Orden ejecutada — {symbol} {direction} {lot_size} lotes | Ticket: {ticket}")
                 self._monitored[ticket] = {
-                    "symbol":     symbol,
-                    "direction":  direction,
-                    "lot_size":   lot_size,
-                    "sl_price":   sl_price,
-                    "tp_price":   tp_price,
-                    "open_price": result["price"],
+                    "symbol": symbol, "direction": direction, "lot_size": lot_size,
+                    "sl_price": sl_price, "tp_price": tp_price, "open_price": result["price"],
                 }
                 logger.info(f"👁 Monitor activado para ticket {ticket}")
-
                 return result
-
         except httpx.HTTPStatusError as e:
             error = e.response.json().get("detail", str(e))
             logger.error(f"❌ Error al abrir orden: {error}")
@@ -110,23 +66,14 @@ class MT5Client:
             return {"status": "error", "error": str(e)}
 
     async def close_order(self, ticket: int) -> dict:
-        """Cierra una posición por su ticket y la elimina del monitor."""
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                r = await client.post(
-                    f"{self.base_url}/order/close",
-                    json={"ticket": ticket},
-                    headers=self.headers,
-                )
+                r = await client.post(f"{self.base_url}/order/close", json={"ticket": ticket}, headers=self.headers)
                 r.raise_for_status()
                 result = r.json()
                 logger.info(f"✅ Posición cerrada — Ticket: {ticket} | P&L: ${result['profit']:.2f}")
-
-                # Eliminar del monitor
                 self._monitored.pop(ticket, None)
-
                 return result
-
         except httpx.HTTPStatusError as e:
             error = e.response.json().get("detail", str(e))
             logger.error(f"❌ Error al cerrar orden {ticket}: {error}")
@@ -138,13 +85,9 @@ class MT5Client:
     # ── CONSULTAS ─────────────────────────────────────────────
 
     async def get_positions(self) -> list[dict]:
-        """Devuelve todas las posiciones abiertas."""
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                r = await client.get(
-                    f"{self.base_url}/positions",
-                    headers=self.headers,
-                )
+                r = await client.get(f"{self.base_url}/positions", headers=self.headers)
                 r.raise_for_status()
                 return r.json().get("positions", [])
         except Exception as e:
@@ -152,35 +95,47 @@ class MT5Client:
             return []
 
     async def get_account(self) -> dict | None:
-        """Devuelve el estado actual de la cuenta MT5."""
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                r = await client.get(
-                    f"{self.base_url}/account",
-                    headers=self.headers,
-                )
+                r = await client.get(f"{self.base_url}/account", headers=self.headers)
                 r.raise_for_status()
                 return r.json()
         except Exception as e:
             logger.error(f"Error obteniendo cuenta: {e}")
             return None
 
+    async def get_history(self) -> list[dict]:
+        """Devuelve las operaciones cerradas de hoy con su P&L real."""
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                r = await client.get(f"{self.base_url}/history", headers=self.headers)
+                r.raise_for_status()
+                return r.json().get("deals", [])
+        except Exception as e:
+            logger.error(f"Error obteniendo historial: {e}")
+            return []
+
+    async def get_deal_profit(self, ticket: int) -> float:
+        """Busca el P&L real de una operación cerrada por su ticket."""
+        deals = await self.get_history()
+        for deal in deals:
+            if deal["ticket"] == ticket:
+                return deal["profit"]
+        return 0.0
+
     # ── HELPERS ───────────────────────────────────────────────
 
     async def is_available(self) -> bool:
-        """Retorna True si el agente MT5 está disponible y conectado."""
         health = await self.health_check()
         return health.get("status") == "ok"
 
     async def get_daily_pnl(self) -> float:
-        """Retorna el P&L flotante actual de todas las posiciones abiertas."""
         account = await self.get_account()
         if not account:
             return 0.0
         return round(account.get("profit", 0.0), 2)
 
     async def get_drawdown_pct(self) -> float:
-        """Retorna el drawdown diario actual en porcentaje."""
         account = await self.get_account()
         if not account:
             return 0.0
@@ -190,20 +145,12 @@ class MT5Client:
 
     async def start_monitor(self) -> None:
         """
-        Loop de monitorización que corre en background.
-        Comprueba cada 30 segundos el estado de las posiciones vigiladas.
-        Se activa automáticamente al arrancar el servidor (lifespan).
-
-        Detecta y notifica:
-          - Posición cerrada por TP → notifica beneficio
-          - Posición cerrada por SL → notifica pérdida
-          - Drawdown diario >= 4% → alerta de emergencia FTMO
-          - Agente MT5 offline → alerta al operador
+        Loop de monitorización cada 30 segundos.
+        Detecta cierres por SL/TP, drawdown crítico y agente offline.
         """
         from execution.telegram_bot import send_telegram, send_order_result
 
         logger.info("👁 Monitor MT5 iniciado — revisando cada 30 segundos")
-
         consecutive_errors = 0
 
         while True:
@@ -213,7 +160,7 @@ class MT5Client:
                 # ── Verificar agente disponible ───────────────
                 if not await self.is_available():
                     consecutive_errors += 1
-                    if consecutive_errors == 3:  # Solo alertar tras 3 fallos (90 seg)
+                    if consecutive_errors == 3:
                         await send_telegram(
                             "⚠️ *Agente MT5 no responde*\n"
                             "Verifica que el PC está encendido y `mt5_agent.py` corriendo.\n"
@@ -222,13 +169,12 @@ class MT5Client:
                         logger.warning("⚠️ Agente MT5 no disponible — 3 intentos fallidos")
                     continue
 
-                consecutive_errors = 0  # Reset si responde
+                consecutive_errors = 0
 
                 # ── Verificar drawdown FTMO ───────────────────
                 account = await self.get_account()
                 if account:
                     drawdown = account.get("drawdown_pct", 0.0)
-
                     if drawdown >= 4.0:
                         logger.warning(f"🚨 Drawdown crítico: {drawdown}%")
                         await send_telegram(
@@ -246,13 +192,10 @@ class MT5Client:
 
                 # ── Verificar posiciones monitorizadas ────────
                 if not self._monitored:
-                    continue  # Nada que vigilar
+                    continue
 
-                # Obtener posiciones abiertas reales en MT5
                 open_positions = await self.get_positions()
                 open_tickets   = {p["ticket"] for p in open_positions}
-
-                # Detectar posiciones que ya no están abiertas (cerradas por SL/TP)
                 closed_tickets = [t for t in list(self._monitored.keys())
                                   if t not in open_tickets]
 
@@ -260,12 +203,18 @@ class MT5Client:
                     info   = self._monitored.pop(ticket)
                     symbol = info["symbol"]
 
+                    # Esperar 3 segundos para que MT5 registre el deal en el historial
+                    await asyncio.sleep(3)
+
+                    # Obtener P&L real del historial de MT5
+                    profit = await self.get_deal_profit(ticket)
+
                     await send_order_result(
                         ticket=ticket,
                         symbol=symbol,
-                        profit=0.0,  # Se actualizará con /history en siguiente versión
+                        profit=profit,
                     )
-                    logger.info(f"📋 Posición {ticket} cerrada detectada por monitor")
+                    logger.info(f"📋 Posición {ticket} cerrada — P&L real: ${profit:.2f}")
 
             except asyncio.CancelledError:
                 logger.info("👁 Monitor MT5 detenido")
