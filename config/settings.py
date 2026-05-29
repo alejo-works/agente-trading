@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     mt5_login: int = 0
     mt5_password: str = ""
     mt5_server: str = ""
+    mt5_agent_url: str = ""        
+    mt5_agent_secret: str = "" 
 
     # OBJETIVOS DE TRADING
     account_size: float = 10_000.0
