@@ -9,10 +9,10 @@ Sistema de trading algorítmico con IA, RAG y Reinforcement Learning.
 Ver `docs/arquitectura.md`
 
 ## Fases
-- [ ] Fase 0 — Setup inicial ← AQUÍ ESTAMOS
-- [ ] Fase 1 — Señales Pine Script
-- [ ] Fase 2 — Cerebro IA (RAG + Claude)
-- [ ] Fase 3 — Conexión MT5
+- [x] Fase 0 — Setup inicial 
+- [x] Fase 1 — Señales Pine Script
+- [x] Fase 2 — Cerebro IA (RAG + Claude)
+- [x] Fase 3 — Conexión MT5 ← AQUÍ ESTAMOS
 - [ ] Fase 4 — Panel de objetivos
 - [ ] Fase 5 — Backtesting
 - [ ] Fase 6 — RL Engine v1
