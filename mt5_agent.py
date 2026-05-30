@@ -307,6 +307,17 @@ async def clear_history(x_agent_secret: str = Header(...)):
 
     return {"status": "cleared", "message": "Historial local eliminado"}
 
+@app.post("/debug/save_deal")
+async def debug_save_deal(x_agent_secret: str = Header(...)):
+    """Endpoint de test — simula guardar una deal para verificar el historial."""
+    verify_secret(x_agent_secret)
+    
+    # Simula una deal con datos ficticios
+    save_deal(ticket=99999999, symbol="EURUSD", profit=1.11)
+    
+    deals = load_local_deals()
+    return {"status": "saved", "total_deals": len(deals), "deals": deals}
+
 
 # ── ARRANQUE DEL SERVIDOR ─────────────────────────────────────
 if __name__ == "__main__":
