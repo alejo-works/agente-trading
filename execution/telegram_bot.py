@@ -22,7 +22,7 @@ _pending_signals: dict[str, dict] = {}
 
 # ── MENSAJES BÁSICOS ──────────────────────────────────────────
 
-async def send_telegram(message: str, parse_mode: str = "Markdown") -> bool:
+async def send_telegram(message: str, parse_mode: str = "Markdown", reply_markup: dict = None) -> bool:
     """Envía un mensaje de texto al chat configurado."""
     if not settings.telegram_bot_token or not settings.telegram_chat_id:
         logger.warning("Telegram no configurado — TOKEN o CHAT_ID vacíos")
@@ -35,6 +35,8 @@ async def send_telegram(message: str, parse_mode: str = "Markdown") -> bool:
         "parse_mode": parse_mode,
         "disable_web_page_preview": True,
     }
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
 
     try:
         async with httpx.AsyncClient(timeout=10) as client:

@@ -12,6 +12,7 @@ import pytz
 
 from config.settings import settings
 from execution.telegram_bot import send_telegram, send_signal_alert, handle_telegram_callback
+from execution.daily_manager import check_limits, register_trade_opened, register_trade_closed, get_state_summary
 from ai.analyzer import analyze_signal
 
 router = APIRouter()
@@ -132,6 +133,14 @@ async def receive_signal(
         return {"status": "ignored", "reason": "score < 2"}
 
     signal = Signal(**payload)
+
+    # Verificar limites del dia antes de procesar
+    from execution.mt5_client import mt5_client
+    drawdown_pct = await mt5_client.get_drawdown_pct()
+    can_trade, reason = await check_limits(drawdown_pct=drawdown_pct)
+    if not can_trade:
+        logger.info(f"Senal descartada por limite: {reason}")
+        return {"status": "blocked", "reason": reason}
 
     # Mensaje inmediato mientras Claude analiza
     await send_telegram(build_telegram_message(signal))
